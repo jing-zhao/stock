@@ -108,7 +108,7 @@ class StockPriceHistory(object):
 
 
 
-    def _get_start_and_end_index(self, end_date, window_size):
+    def _get_start_and_end_index(self, end_date, window_size=None):
         end_date = datetime(end_date.year, end_date.month, end_date.day)
         while end_date not in self.date_to_daily_index_dict and end_date >= self.start_date:
             end_date = end_date - timedelta(days=1)
@@ -130,7 +130,7 @@ class StockPriceHistory(object):
     def end_price_percentile(self, end_date, window_size=None):
         first_date_index, last_date_index = self._get_start_and_end_index(end_date, window_size)
         max = 0.0
-        min = 1000000.0
+        min = 1000000000.0
         for i in range(first_date_index, last_date_index + 1):
             if self.daily_price_list[i].high > max:
                 max = self.daily_price_list[i].high
@@ -149,17 +149,106 @@ class StockPriceHistory(object):
 
     def is_buy_point(self, end_date):
 
-        print 'fluctuation_percentile: ' + str(self.fluctuation_percentile(end_date, 90))
-        print 'active day percentile: ' + str(self.active_day_count_percentile(end_date, 90))
-        print 'end price percentile: ' + str(self.end_price_percentile(end_date, 90))
-        print 'price_down_precentile: ' + str(self.price_down_percentile(end_date, 30))
+        fluctuation_percentile = self.fluctuation_percentile(end_date, 90)
+        active_day_percentile = self.active_day_count_percentile(end_date, 90)
+        end_price_percentile = self.end_price_percentile(end_date, 90)
+        price_down_precentile = self.price_down_percentile(end_date, 30)
 
-        return self.price_down_percentile(end_date, 30) <= self.BUY_POINT_THRESHOLD_PRICE_DOWN_PERCENTILE and \
-           self.end_price_percentile(end_date, 90) <= self.BUY_POINT_THRESHOLD_END_PRICE_PERCENTILE and \
-           self.active_day_count_percentile(end_date, 90) >= self.BUY_POINT_THRESHOLD_ACTIVE_DAY_PERCENTILE and \
-           self.fluctuation_percentile(end_date, 90) >= self.BUY_POINT_THRESHOLD_FLUCTUATION_PERCENTILE
+        print 'fluctuation_percentile: ' + str(fluctuation_percentile) + \
+              ' PassValue: >=' + str(self.BUY_POINT_THRESHOLD_FLUCTUATION_PERCENTILE)
+        print 'active day percentile: ' + str(active_day_percentile) + \
+              ' PassValue: >=' + str(self.BUY_POINT_THRESHOLD_ACTIVE_DAY_PERCENTILE)
+        print 'end price percentile: ' + str(end_price_percentile) + \
+              ' PassValue: <=' + str(self.BUY_POINT_THRESHOLD_END_PRICE_PERCENTILE)
+        print 'price_down_precentile: ' + str(price_down_precentile) + \
+              ' PassValue: <=' + str(self.BUY_POINT_THRESHOLD_PRICE_DOWN_PERCENTILE)
+
+        return fluctuation_percentile >= self.BUY_POINT_THRESHOLD_FLUCTUATION_PERCENTILE and \
+               active_day_percentile >= self.BUY_POINT_THRESHOLD_ACTIVE_DAY_PERCENTILE and \
+               end_price_percentile <=  self.BUY_POINT_THRESHOLD_END_PRICE_PERCENTILE and \
+               price_down_precentile <= self.BUY_POINT_THRESHOLD_PRICE_DOWN_PERCENTILE
+
+    def get_previous_close_price(self, start_date):
+        _, last_date_index = self._get_start_and_end_index(start_date, 90)
+        return self.daily_price_list[last_date_index].close
+
+    def is_market_open(self, the_day):
+        return the_day in self.date_to_daily_index_dict
+
+    def get_stock_price(self, the_day):
+        if self.is_market_open(the_day):
+            return self.daily_price_list[self.date_to_daily_index_dict[the_day]]
+        raise "Error"
 
 
+class Order(object):
+    def __init__(self, amount, price):
 
-stock = StockPriceHistory.load('/Users/zxzhang/stock/data/BABA1.csv')
-print 'is_buy_point: ' + str(stock.is_buy_point(datetime.today()))
+        self.amount = amount
+        self.price = price
+
+class TransactionSimulator(object):
+
+    def __init__(self, stock_symbol):
+
+        self.stock_price_history = StockPriceHistory.load('/Users/zxzhang/stock/data/' + stock_symbol + '.csv')
+        self.stock_symbol = stock_symbol
+        self.position = 0
+        self.cost = 0.0
+        self.cash = 1000000.0
+        self.buy_orders = []
+        self.sell_orders = []
+        self.start_amount = None
+
+    def _get_account_value(self, the_day):
+        return self.cash + self.position * self.stock_price_history.get_stock_price(the_day).close
+
+    def deal_buy(self, amount, order_price, deal_price):
+        print "buy: amount: " + str(amount) + "deal_price: " + str(deal_price)
+
+        self.position = self.position + amount
+        self.cost = self.cost + amount * deal_price
+        self.cash = self.cash - amount * deal_price
+        self.sell_orders.append(Order(amount, order_price * (1 + StockPriceHistory.THRESHOLD_FLUCTUATION)))
+
+    def deal_sell(self, amount, order_price, deal_price):
+        print "sell: amount: " + str(amount) + "deal_price: " + str(deal_price)
+
+        self.position = self.position - amount
+        self.cost = self.cost - amount * deal_price
+        self.cash = self.cash + amount * deal_price
+        self.buy_orders.append(Order(amount, order_price * (1 - StockPriceHistory.THRESHOLD_FLUCTUATION)))
+
+    def start(self, start_date):
+        #assume start from market closed of start_date
+
+        cur_date = datetime(start_date.year, start_date.month, start_date.day)
+        while (cur_date <=  self.stock_price_history.end_date):
+            if not self.start_amount and self.stock_price_history.is_buy_point(cur_date):
+                price = self.stock_price_history.get_previous_close_price(start_date)
+                self.start_amount = round(self.cash/10/price)
+                #use 1/10 fund for first buy
+                self.buy_orders.append(Order(self.start_amount, price))
+            elif self.stock_price_history.is_market_open(cur_date):
+                cur_price = self.stock_price_history.get_stock_price(cur_date)
+                #try to execute buy
+                if (self.buy_orders):
+                    for buy_order in self.buy_orders:
+                        if buy_order.price >= cur_price.low:
+                            self.deal_buy(buy_order.amount, buy_order.price, min(buy_order.price, cur_price.open))
+                            self.buy_orders.remove(buy_order)
+                #try to execute sell
+                if (self.sell_orders):
+                    for sell_order in self.sell_orders:
+                        if sell_order.price <= cur_price.high:
+                            self.deal_sell(sell_order.amount, sell_order.price, min(sell_order.price, cur_price.open))
+                            self.sell_orders.remove(sell_order)
+
+                print "Date:" + cur_date.strftime("%Y-%m-%d") + " Account Value: " + str(self._get_account_value(cur_date))
+            cur_date = cur_date + timedelta(days=1)
+
+
+#stock = StockPriceHistory.load('/Users/zxzhang/stock/data/BABA1.csv')
+#print 'is_buy_point: ' + str(stock.is_buy_point(datetime.today()))
+trans = TransactionSimulator("BABA1")
+trans.start(datetime(2015, 06, 12))
