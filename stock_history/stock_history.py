@@ -24,7 +24,7 @@ class StockPriceHistory(object):
     BUY_POINT_THRESHOLD_FLUCTUATION_PERCENTILE = 0.3
 
     THRESHOLD_DAY_ACTIVZE = 0.05
-    THRESHOLD_FLUCTUATION = 0.1
+    THRESHOLD_FLUCTUATION = 0.05
 
     def __init__(self, daily_price_list, date_to_daily_index_dict, str_start_date, str_end_date):
         self.daily_price_list = daily_price_list
@@ -58,23 +58,28 @@ class StockPriceHistory(object):
 
     
     def _process_one_price(self, prev_base_price, cur_price, fluctuation_signal_list):
-        if abs(cur_price - prev_base_price) / prev_base_price < self.THRESHOLD_FLUCTUATION:
+        signal = True if cur_price > prev_base_price else False
+        threshold = self.THRESHOLD_FLUCTUATION
+        if not signal:
+            threshold = threshold / (1 + threshold)
+
+        if abs(cur_price - prev_base_price) / prev_base_price < threshold:
             return (prev_base_price, 0)
 
-        signal = True if cur_price > prev_base_price else False
         count = 0
-        while abs(cur_price - prev_base_price) / prev_base_price >= self.THRESHOLD_FLUCTUATION:
+        while abs(cur_price - prev_base_price) / prev_base_price >= threshold:
             if signal:
-                prev_base_price = prev_base_price * (1 + self.THRESHOLD_FLUCTUATION)
+                prev_base_price = prev_base_price * (1 + threshold)
             else:
-                prev_base_price = prev_base_price * (1 - self.THRESHOLD_FLUCTUATION)
+                prev_base_price = prev_base_price * (1 - threshold)
 
             if not fluctuation_signal_list or fluctuation_signal_list[-1] == signal:
                 fluctuation_signal_list.append(signal)
             else:
                 fluctuation_signal_list.pop()
                 count = count + 1
-        #iihlkhbjldfdfltlrlcefjtgehekidfuprint 'new base:' + str(prev_base_price) + ' count: ' + str(count) + ' sig: ' + ','.join(str(b) for b in fluctuation_signal_list)
+
+        print 'new base:' + str(prev_base_price) + ' count: ' + str(count) + ' sig: ' + ','.join(str(b) for b in fluctuation_signal_list)
         return prev_base_price, count
 
     @classmethod
@@ -83,9 +88,9 @@ class StockPriceHistory(object):
         date_to_daily_index_dict = {}
         first_date = None
         last_date = None
-        with open(file_path, "r") as lines:
-            lines.readline()
-            lines = lines.readlines()
+        with open(file_path, "r") as fs:
+            fs.readline()
+            lines = fs.readlines()
             lines.reverse()
             for line in lines:
                 cols = line.split(',')
@@ -217,7 +222,9 @@ class TransactionSimulator(object):
         self.position = self.position - amount
         self.cost = self.cost - amount * deal_price
         self.cash = self.cash + amount * deal_price
-        self.buy_orders.append(Order(amount, order_price * (1 - StockPriceHistory.THRESHOLD_FLUCTUATION)))
+        threshold = StockPriceHistory.THRESHOLD_FLUCTUATION / (1 + StockPriceHistory.THRESHOLD_FLUCTUATION)
+
+        self.buy_orders.append(Order(amount, order_price * (1 - threshold)))
 
     def start(self, start_date):
         #assume start from market closed of start_date
